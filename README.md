@@ -41,6 +41,9 @@ I pushed one short quadraphonic demo file into the project.
 
 Command is as follows :
 
+```
+go run sqdecoder.go -input "sqdemo1.wav"
+```
 ![example](./images/commandeSqDecoder.png)
 
 We then get 2 stereo files (in wave format) that correspond to the front and back channels.
