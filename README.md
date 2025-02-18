@@ -1,4 +1,4 @@
-# Quadriphonic SQdecoder in less than 300 lines of golang : Part 3
+# Quadriphonic SQdecoder in less than 400 lines of golang : Part 3
 
 This part follows part 1 and part 2 from Quadriphonic SQDecoder from my previous article.
 
@@ -57,8 +57,15 @@ You can see the difference between the front and back signals under Audacity.
 
 *back stereo channels lb and rb*
 
-to be continued...
+You can also generate a single output file in 4.0 format with the command :
 
+```
+go run sqdecoder.go -input "sqdemo1.wav" -audioformat "4.0"
+```
+
+the sqdemo1_4_0.wav file will be generated.
+
+to be continued...
 
 # sources
 

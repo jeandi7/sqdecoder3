@@ -96,7 +96,29 @@ func maxAbs(data []float64) float64 {
 	return max
 }
 
-// createWAVHeader crée un en-tête WAV pour le nombre donné d'échantillons.
+// Header file 4.0 (4 channels, 16 bits).
+func createWAVHeader4_0(sampleRate int) []byte {
+	// Write WAV header manually
+	// >> is used to perform right bit shift
+	// sampleRate >> 8 shifts the bits 8 positions to the right, effectively dividing by 256 (2^8) and getting the second byte of the number.
+	// sampleRate >> 16 shifts 16 positions, giving the third byte.
+	// sampleRate >> 24 for the fourth byte.
+	// The & 0xFF operation masks out all but the least significant byte after the shift, ensuring only one byte is written.
+
+	return []byte{
+		'R', 'I', 'F', 'F', 0, 0, 0, 0, // RIFF (chunk ID, taille totale à mettre à jour plus tard)
+		'W', 'A', 'V', 'E', // WAVE (format)
+		'f', 'm', 't', ' ', 16, 0, 0, 0, // fmt (subchunk1 ID, subchunk1 size = 16 pour PCM)
+		1, 0, // Compression code (1 = PCM)
+		4, 0, // Number of channels (4 pour 4.0)
+		byte(sampleRate & 0xFF), byte((sampleRate >> 8) & 0xFF), byte((sampleRate >> 16) & 0xFF), byte((sampleRate >> 24) & 0xFF), // Sample rate
+		byte((sampleRate * 8) & 0xFF), byte(((sampleRate * 8) >> 8) & 0xFF), byte(((sampleRate * 8) >> 16) & 0xFF), byte(((sampleRate * 8) >> 24) & 0xFF), // Byte rate (sampleRate * channels * bitsPerSample / 8 = sampleRate * 4 * 16 / 8 = sampleRate * 8)
+		8, 0, // Block align (channels * bitsPerSample / 8 = 4 * 16 / 8 = 8)
+		16, 0, // Bits per sample (16 bits)
+		'd', 'a', 't', 'a', 0, 0, 0, 0, // data (subchunk2 ID, taille des données à mettre à jour plus tard)
+	}
+}
+
 func createWAVHeader(sampleRate int) []byte {
 
 	// Write WAV header manually
@@ -118,6 +140,72 @@ func createWAVHeader(sampleRate int) []byte {
 		16, 0, // Bits per sample
 		'd', 'a', 't', 'a', 0, 0, 0, 0, // data
 	}
+}
+
+// writeWaveFile4_0 écrit un fichier WAV au format 4.0 (quadraphonie).
+func writeWaveFile4_0(s string, sampleRate int, leftFront, rightFront, leftBack, rightBack []float64) error {
+
+	numSamples := len(leftFront)
+	if len(rightFront) != numSamples || len(leftBack) != numSamples || len(rightBack) != numSamples {
+		return fmt.Errorf("all channels must be the same length")
+	}
+
+	outFile, err := os.Create(s)
+	if err != nil {
+		return fmt.Errorf("error creating WAV file %w", err)
+	}
+	defer outFile.Close()
+
+	// Créer l'en-tête WAV pour 4.0 (4 canaux, 16 bits)
+	header := createWAVHeader4_0(sampleRate)
+
+	// Écrire l'en-tête initial dans le fichier
+	_, err = outFile.Write(header)
+	if err != nil {
+		return fmt.Errorf("error writing WAV header: %w", err)
+	}
+	//  write (4 channels, 16 bits)
+	for i := 0; i < numSamples; i++ {
+		sampleLF := int16(leftFront[i] * float64(math.MaxInt16))
+		sampleRF := int16(rightFront[i] * float64(math.MaxInt16))
+		sampleLB := int16(leftBack[i] * float64(math.MaxInt16))
+		sampleRB := int16(rightBack[i] * float64(math.MaxInt16))
+
+		_, err := outFile.Write([]byte{
+			byte(sampleLF & 0xFF), byte(sampleLF >> 8), // LF
+			byte(sampleRF & 0xFF), byte(sampleRF >> 8), // RF
+			byte(sampleLB & 0xFF), byte(sampleLB >> 8), // LB
+			byte(sampleRB & 0xFF), byte(sampleRB >> 8), // RB
+		})
+		if err != nil {
+			return fmt.Errorf("error writing audio data : %w", err)
+		}
+	}
+
+	outSize := int64(numSamples * 4 * 2) // 4 channels * 2 bytes per samples
+	chunkSize := 36 + outSize            // 36 = size of the header up to data chunk
+
+	// Mettre à jour les tailles dans l'en-tête
+	header[4] = byte(chunkSize & 0xFF)
+	header[5] = byte((chunkSize >> 8) & 0xFF)
+	header[6] = byte((chunkSize >> 16) & 0xFF)
+	header[7] = byte((chunkSize >> 24) & 0xFF)
+	header[40] = byte(outSize & 0xFF)
+	header[41] = byte((outSize >> 8) & 0xFF)
+	header[42] = byte((outSize >> 16) & 0xFF)
+	header[43] = byte((outSize >> 24) & 0xFF)
+
+	// Write the updated header back to the file
+	_, err = outFile.Seek(0, 0)
+	if err != nil {
+		return fmt.Errorf("erreur lors du repositionnement au début du fichier : %w", err)
+	}
+	_, err = outFile.Write(header)
+	if err != nil {
+		return fmt.Errorf("erreur lors de la réécriture de l'en-tête : %w", err)
+	}
+
+	return nil
 }
 
 func readWaveFile(s string) ([]float64, []float64, int, error) {
@@ -234,9 +322,12 @@ var log = InitLogger()
 
 func main() {
 	var input string = ""
+	var audioformat string = ""
 	var showHelp bool
 
 	flag.StringVar(&input, "input", "", "Read audio Wave File")
+	flag.StringVar(&audioformat, "audioformat", "", "is optional : value must be 4.0")
+
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.Parse()
 
@@ -262,20 +353,29 @@ func main() {
 	filename := fileNameExtract(input)
 	filenameBackChanels := "output_back_" + filename + ".wav"
 	filenameFrontChanels := "output_front_" + filename + ".wav"
+	filename4Channels := filename + "_4_0" + ".wav"
 
-	log.Info("Write output back channels...", "ouput", filenameBackChanels)
+	if audioformat != "" {
+		log.Info("Write output 4.0 channels...", "ouput", filename4Channels)
+		err = writeWaveFile4_0(filename4Channels, sampleRate, frontLeft, frontRight, backLeft, backRight)
+		if err != nil {
+			log.Error("Failed to write output 4.0 chanels:", "error", err)
+			return
+		}
+	} else {
+		log.Info("Write output back channels...", "ouput", filenameBackChanels)
+		err = writeWaveFile(filenameBackChanels, sampleRate, backLeft, backRight)
+		if err != nil {
+			log.Error("Failed to write output back channels:", "error", err)
+			return
+		}
 
-	err = writeWaveFile(filenameBackChanels, sampleRate, backLeft, backRight)
-	if err != nil {
-		log.Error("Failed to write output back channels:", "error", err)
-		return
-	}
-
-	log.Info("Write output front channels...", "ouput", filenameFrontChanels)
-	err = writeWaveFile(filenameFrontChanels, sampleRate, frontLeft, frontRight)
-	if err != nil {
-		log.Error("Failed to write output front chanels:", "error", err)
-		return
+		log.Info("Write output front channels...", "ouput", filenameFrontChanels)
+		err = writeWaveFile(filenameFrontChanels, sampleRate, frontLeft, frontRight)
+		if err != nil {
+			log.Error("Failed to write output front chanels:", "error", err)
+			return
+		}
 	}
 
 }
