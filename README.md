@@ -1,4 +1,4 @@
-# Quadriphonic SQdecoder in less than 400 lines of golang : Part 3
+# Quadriphonic SQdecoder in less than 600 lines of golang : Part 3
 
 This part follows part 1 and part 2 from Quadriphonic SQDecoder from my previous article.
 
@@ -67,6 +67,23 @@ go run sqdecoder.go -input "sqdemo1.wav" -audioformat "4.0"
 ```
 
 the sqdemo1_4_0.wav file will be generated.
+
+or you can generate a single output file in 5.1 format (experimental) with the command
+
+```
+go run sqdecoder.go -input "sqdemo1.wav" -audioformat "5.1"
+
+```
+In 5.1 format the center and bass channels are recreated as follows
+
+The 0.316 coeff is a -10db attenuation
+
+```
+center = alpha * (lf + rf)
+lfe = 0.316*Lowpassfilter(<350hz,lf + rf + lb + rb)
+
+```
+
 
 to be continued...
 

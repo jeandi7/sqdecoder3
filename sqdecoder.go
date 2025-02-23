@@ -74,12 +74,12 @@ func DecodeSQ(LT []float64, RT []float64) ([]float64, []float64, []float64, []fl
 	return frontLeftTime, frontRightTime, backLeftTime, backRightTime
 }
 
-func normalize(left *[]float64, back *[]float64) {
-	maxVal := math.Max(maxAbs(*left), maxAbs(*back))
+func normalize(left *[]float64, right *[]float64) {
+	maxVal := math.Max(maxAbs(*left), maxAbs(*right))
 	if maxVal > 1 {
 		for i := range *left {
 			(*left)[i] /= maxVal
-			(*back)[i] /= maxVal
+			(*right)[i] /= maxVal
 		}
 	}
 }
@@ -94,6 +94,193 @@ func maxAbs(data []float64) float64 {
 		}
 	}
 	return max
+}
+
+/*
+func normalizeSingle(channel *[]float64) {
+	maxVal := maxAbs(*channel)
+	if maxVal > 1 {
+		for i := range *channel {
+			(*channel)[i] /= maxVal
+		}
+	}
+}
+*/
+
+// experimental lowpassFilter
+func lowPassFilterLFE(lfe []complex128, sampleRate int) {
+	M := len(lfe)    // Number of frequency coefficients
+	N := 2 * (M - 1) // Longueur du signal temporel (N = 2 * (M - 1))
+
+	cutoffFreq := 350.0 // Hz
+	freqResolution := float64(sampleRate) / float64(N)
+	cutoffIndex := int(cutoffFreq / freqResolution)
+
+	// security
+	if cutoffIndex >= M/2 {
+		cutoffIndex = M/2 - 1
+	}
+
+	log.Info("lowPassFilterLFE : ", "freqResolution", freqResolution, "cutOffIndex", cutoffIndex, "Nbr coeff freq ", M)
+
+	for i := cutoffIndex; i < M/2; i++ {
+		(lfe)[i] = complex(0, 0)   // Removes positive high frequencies
+		(lfe)[M-i] = complex(0, 0) // Removes negative high frequencies
+	}
+}
+
+// used for 5.1
+func DecodeSQTo5_1(LT []float64, RT []float64) ([]float64, []float64, []float64, []float64, []float64, []float64) {
+	var alpha float64 = 1 / math.Sqrt(2)
+
+	// lfecoeff : -10db = 0.316...
+	var lfecoeff = math.Pow(10, -1.0/2.0)
+	log.Info("DecodeSQ to 5.1 (experimental) ...", "lfcoeff", lfecoeff)
+
+	N := len(LT)
+	if len(RT) != N {
+		log.Error("Input slices LT and RT must have the same length")
+		panic("Input slices LT and RT must have the same length")
+	}
+
+	fft := fourier.NewFFT(N)
+	freqLT := fft.Coefficients(nil, LT)
+	freqRT := fft.Coefficients(nil, RT)
+
+	M := len(freqLT)
+	log.Info("Expected FFT output size:", "expected", (N/2)+1, "actual", M)
+
+	frontLeft := make([]complex128, M)
+	frontRight := make([]complex128, M)
+	backLeft := make([]complex128, M)
+	backRight := make([]complex128, M)
+	center := make([]complex128, M)
+	lfe := make([]complex128, M)
+
+	for i := 0; i < M; i++ {
+		frontLeft[i] = freqLT[i]
+		frontRight[i] = freqRT[i]
+		backLeft[i] = complex(-alpha, 0) * (freqRT[i] - complex(0, 1)*freqLT[i])
+		backRight[i] = complex(alpha, 0) * (freqLT[i] - complex(0, 1)*freqRT[i])
+		center[i] = complex(alpha, 0) * (freqLT[i] + freqRT[i])
+		lfe[i] = complex(lfecoeff, 0) * (freqLT[i] + freqRT[i] + backLeft[i] + backRight[i])
+	}
+
+	// Appliquer le filtre passe-bas à lfe
+	lowPassFilterLFE(lfe, 44100) // Supposons 44.1 kHz, ajustez selon votre cas
+	// lfeTime := fft.Sequence(nil, center)
+	log.Info("lfe size:", "lfetime", len(lfe), "lfe", len(lfe))
+
+	frontLeftTime := fft.Sequence(nil, frontLeft)
+	frontRightTime := fft.Sequence(nil, frontRight)
+	backLeftTime := fft.Sequence(nil, backLeft)
+	backRightTime := fft.Sequence(nil, backRight)
+	centerTime := fft.Sequence(nil, center)
+	lfeTime := fft.Sequence(nil, lfe)
+
+	normalize(&frontLeftTime, &frontRightTime)
+	normalize(&backLeftTime, &backRightTime)
+	normalize(&centerTime, &lfeTime)
+
+	// normalizeSingle(&centerTime)
+	// normalizeSingle(&lfeTime)
+
+	log.Info("DecodeSQ to 5.1 is done.")
+
+	return frontLeftTime, frontRightTime, centerTime, lfeTime, backLeftTime, backRightTime
+}
+
+// used for 5.1
+func createWAVHeader5_1(sampleRate int) []byte {
+	// Write WAV header manually
+	// >> is used to perform right bit shift
+	// sampleRate >> 8 shifts the bits 8 positions to the right, effectively dividing by 256 (2^8) and getting the second byte of the number.
+	// sampleRate >> 16 shifts 16 positions, giving the third byte.
+	// sampleRate >> 24 for the fourth byte.
+	// The & 0xFF operation masks out all but the least significant byte after the shift, ensuring only one byte is written.
+
+	return []byte{
+		'R', 'I', 'F', 'F', 0, 0, 0, 0, // RIFF (chunk ID, taille totale à mettre à jour plus tard)
+		'W', 'A', 'V', 'E', // WAVE (format)
+		'f', 'm', 't', ' ', 16, 0, 0, 0, // fmt (subchunk1 ID, subchunk1 size = 16 pour PCM)
+		1, 0, // Compression code (1 = PCM)
+		6, 0, // Number of channels (6 pour 5.1)
+		byte(sampleRate & 0xFF), byte((sampleRate >> 8) & 0xFF), byte((sampleRate >> 16) & 0xFF), byte((sampleRate >> 24) & 0xFF), // Sample rate
+		byte((sampleRate * 12) & 0xFF), byte(((sampleRate * 12) >> 8) & 0xFF), byte(((sampleRate * 12) >> 16) & 0xFF), byte(((sampleRate * 12) >> 24) & 0xFF), // Byte rate (sampleRate * channels * bitsPerSample / 8 = sampleRate * 6 * 16 / 8 = sampleRate * 12)
+		12, 0, // Block align (channels * bitsPerSample / 8 = 6 * 16 / 8 = 12)
+		16, 0, // Bits per sample (16 bits)
+		'd', 'a', 't', 'a', 0, 0, 0, 0, // data (subchunk2 ID, taille des données à mettre à jour plus tard)
+	}
+}
+
+// used for 5.1
+func writeWaveFile5_1(s string, sampleRate int, leftFront, rightFront, leftBack, rightBack, center, lfe []float64) error {
+	numSamples := len(leftFront)
+	if len(rightFront) != numSamples || len(leftBack) != numSamples || len(rightBack) != numSamples || len(center) != numSamples || len(lfe) != numSamples {
+		return fmt.Errorf("all channels must be the same length")
+	}
+
+	outFile, err := os.Create(s)
+	if err != nil {
+		return fmt.Errorf("error creating WAV file: %w", err)
+	}
+	defer outFile.Close()
+
+	// Créer l'en-tête WAV pour 5.1 (6 canaux, 16 bits)
+	header := createWAVHeader5_1(sampleRate)
+
+	// Écrire l'en-tête initial dans le fichier
+	_, err = outFile.Write(header)
+	if err != nil {
+		return fmt.Errorf("error writing WAV header: %w", err)
+	}
+
+	// write (6 canaux, 16 bits) dans l'ordre SMPTE : L, R, C, LFE, Ls, Rs
+	for i := 0; i < numSamples; i++ {
+		sampleL := int16(leftFront[i] * float64(math.MaxInt16))  // L
+		sampleR := int16(rightFront[i] * float64(math.MaxInt16)) // R
+		sampleC := int16(center[i] * float64(math.MaxInt16))     // C
+		sampleLFE := int16(lfe[i] * float64(math.MaxInt16))      // LFE
+		sampleLs := int16(leftBack[i] * float64(math.MaxInt16))  // Ls
+		sampleRs := int16(rightBack[i] * float64(math.MaxInt16)) // Rs
+
+		_, err := outFile.Write([]byte{
+			byte(sampleL & 0xFF), byte(sampleL >> 8), // L
+			byte(sampleR & 0xFF), byte(sampleR >> 8), // R
+			byte(sampleC & 0xFF), byte(sampleC >> 8), // C
+			byte(sampleLFE & 0xFF), byte(sampleLFE >> 8), // LFE
+			byte(sampleLs & 0xFF), byte(sampleLs >> 8), // Ls
+			byte(sampleRs & 0xFF), byte(sampleRs >> 8), // Rs
+		})
+		if err != nil {
+			return fmt.Errorf("error writing audio data: %w", err)
+		}
+	}
+
+	// Mettre à jour les tailles dans l'en-tête
+	outSize := int64(numSamples * 6 * 2) // 6 canaux * 2 octets par échantillon
+	chunkSize := 36 + outSize            // 36 = taille de l'en-tête jusqu'au chunk de données
+
+	header[4] = byte(chunkSize & 0xFF)
+	header[5] = byte((chunkSize >> 8) & 0xFF)
+	header[6] = byte((chunkSize >> 16) & 0xFF)
+	header[7] = byte((chunkSize >> 24) & 0xFF)
+	header[40] = byte(outSize & 0xFF)
+	header[41] = byte((outSize >> 8) & 0xFF)
+	header[42] = byte((outSize >> 16) & 0xFF)
+	header[43] = byte((outSize >> 24) & 0xFF)
+
+	// Réécrire l'en-tête mis à jour
+	_, err = outFile.Seek(0, 0)
+	if err != nil {
+		return fmt.Errorf("erreur lors du repositionnement au début du fichier : %w", err)
+	}
+	_, err = outFile.Write(header)
+	if err != nil {
+		return fmt.Errorf("erreur lors de la réécriture de l'en-tête : %w", err)
+	}
+
+	return nil
 }
 
 // Header file 4.0 (4 channels, 16 bits).
@@ -326,7 +513,7 @@ func main() {
 	var showHelp bool
 
 	flag.StringVar(&input, "input", "", "Read audio Wave File")
-	flag.StringVar(&audioformat, "audioformat", "", "is optional : value must be 4.0")
+	flag.StringVar(&audioformat, "audioformat", "", "is optional : value must be 4.0 or 5.1 (experimental)")
 
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.Parse()
@@ -348,28 +535,40 @@ func main() {
 		return
 	}
 
-	frontLeft, frontRight, backLeft, backRight := DecodeSQ(LT, RT)
-
 	filename := fileNameExtract(input)
-	filenameBackChanels := "output_back_" + filename + ".wav"
-	filenameFrontChanels := "output_front_" + filename + ".wav"
-	filename4Channels := filename + "_4_0" + ".wav"
 
 	if audioformat != "" {
-		log.Info("Write output 4.0 channels...", "ouput", filename4Channels)
-		err = writeWaveFile4_0(filename4Channels, sampleRate, frontLeft, frontRight, backLeft, backRight)
-		if err != nil {
-			log.Error("Failed to write output 4.0 chanels:", "error", err)
-			return
+		if audioformat == "5.1" {
+			filename5_1Channels := filename + "_5_1" + ".wav"
+			log.Info("Write output 5.1 channels..(experimental)...", "ouput", filename5_1Channels)
+			frontLeft, frontRight, centerTime, lfeTime, backLeft, backRight := DecodeSQTo5_1(LT, RT)
+			err = writeWaveFile5_1(filename5_1Channels, sampleRate, frontLeft, frontRight, centerTime, lfeTime, backLeft, backRight)
+			if err != nil {
+				log.Error("Failed to write output 5.1 chanels:", "error", err)
+				return
+			}
+
+		} else {
+			filename4Channels := filename + "_4_0" + ".wav"
+			log.Info("Write output 4.0 channels...", "ouput", filename4Channels)
+			frontLeft, frontRight, backLeft, backRight := DecodeSQ(LT, RT)
+			err = writeWaveFile4_0(filename4Channels, sampleRate, frontLeft, frontRight, backLeft, backRight)
+			if err != nil {
+				log.Error("Failed to write output 4.0 chanels:", "error", err)
+				return
+			}
 		}
+
 	} else {
+		filenameBackChanels := "output_back_" + filename + ".wav"
+		filenameFrontChanels := "output_front_" + filename + ".wav"
+		frontLeft, frontRight, backLeft, backRight := DecodeSQ(LT, RT)
 		log.Info("Write output back channels...", "ouput", filenameBackChanels)
 		err = writeWaveFile(filenameBackChanels, sampleRate, backLeft, backRight)
 		if err != nil {
 			log.Error("Failed to write output back channels:", "error", err)
 			return
 		}
-
 		log.Info("Write output front channels...", "ouput", filenameFrontChanels)
 		err = writeWaveFile(filenameFrontChanels, sampleRate, frontLeft, frontRight)
 		if err != nil {
