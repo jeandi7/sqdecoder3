@@ -96,7 +96,6 @@ func maxAbs(data []float64) float64 {
 	return max
 }
 
-/*
 func normalizeSingle(channel *[]float64) {
 	maxVal := maxAbs(*channel)
 	if maxVal > 1 {
@@ -105,27 +104,43 @@ func normalizeSingle(channel *[]float64) {
 		}
 	}
 }
-*/
 
-// experimental lowpassFilter
-func lowPassFilterLFE(lfe []complex128, sampleRate int) {
-	M := len(lfe)    // Number of frequency coefficients
-	N := 2 * (M - 1) // Longueur du signal temporel (N = 2 * (M - 1))
+// Filter based on a continuous function in order to reduce the oscillations caused by the approximation.
+func lowPassFilterLFEContinuous(lfe []complex128, sampleRate float64, cutoffFreq float64) {
+	M := len(lfe)    // Nombre de coefficients fréquentiels
+	N := 2 * (M - 1) // Longueur du signal temporel
+	freqResolution := sampleRate / float64(N)
 
-	cutoffFreq := 350.0 // Hz
-	freqResolution := float64(sampleRate) / float64(N)
-	cutoffIndex := int(cutoffFreq / freqResolution)
+	// Paramètre de pente pour la décroissance (plus tau est grand, plus la transition est douce)
+	tau := 0.7 * cutoffFreq
 
-	// security
-	if cutoffIndex >= M/2 {
-		cutoffIndex = M/2 - 1
+	log.Info("Continuous lowPassFilterLFE : ", "freqResolution", freqResolution, "Nbr coeff freq ", M)
+
+	// Appliquer une fonction continue dans le domaine fréquentiel
+	for i := 0; i < M; i++ {
+		// Fréquence correspondante à l'indice i
+		freq := float64(i) * freqResolution
+
+		// Fonction continue : atténuation exponentielle après cutoffFreq
+		if freq > cutoffFreq {
+			attenuation := math.Exp(-((freq - cutoffFreq) / tau))
+			lfe[i] = lfe[i] * complex(attenuation, 0)
+		}
+		// Les fréquences <= cutoffFreq restent inchangées (gain de 1)
 	}
+}
+
+// lowpassFilter with a rectangular window function H(f)
+func lowPassFilterLFE(lfe []complex128, sampleRate float64, cutoffFreq float64) {
+	M := len(lfe)    // Nombre de coefficients fréquentiels
+	N := 2 * (M - 1) // Longueur du signal temporel
+	freqResolution := sampleRate / float64(N)
+	cutoffIndex := int(cutoffFreq/freqResolution) + 1
 
 	log.Info("lowPassFilterLFE : ", "freqResolution", freqResolution, "cutOffIndex", cutoffIndex, "Nbr coeff freq ", M)
 
-	for i := cutoffIndex; i < M/2; i++ {
-		(lfe)[i] = complex(0, 0)   // Removes positive high frequencies
-		(lfe)[M-i] = complex(0, 0) // Removes negative high frequencies
+	for i := cutoffIndex; i < M; i++ {
+		lfe[i] = complex(0, 0) // Removes positive high frequencies
 	}
 }
 
@@ -167,8 +182,10 @@ func DecodeSQTo5_1(LT []float64, RT []float64) ([]float64, []float64, []float64,
 	}
 
 	// Appliquer le filtre passe-bas à lfe
-	lowPassFilterLFE(lfe, 44100) // Supposons 44.1 kHz, ajustez selon votre cas
-	// lfeTime := fft.Sequence(nil, center)
+
+	// lowPassFilterLFE(lfe, 44100.0, 150.0) // Supposons 44.1 kHz, ajustez selon votre cas
+	lowPassFilterLFEContinuous(lfe, 44100.0, 150.0)
+
 	log.Info("lfe size:", "lfetime", len(lfe), "lfe", len(lfe))
 
 	frontLeftTime := fft.Sequence(nil, frontLeft)
@@ -180,10 +197,10 @@ func DecodeSQTo5_1(LT []float64, RT []float64) ([]float64, []float64, []float64,
 
 	normalize(&frontLeftTime, &frontRightTime)
 	normalize(&backLeftTime, &backRightTime)
-	normalize(&centerTime, &lfeTime)
+	// normalize(&centerTime, &lfeTime)
 
-	// normalizeSingle(&centerTime)
-	// normalizeSingle(&lfeTime)
+	normalizeSingle(&centerTime)
+	normalizeSingle(&lfeTime)
 
 	log.Info("DecodeSQ to 5.1 is done.")
 

@@ -68,7 +68,7 @@ go run sqdecoder.go -input "sqdemo1.wav" -audioformat "4.0"
 
 the sqdemo1_4_0.wav file will be generated.
 
-or you can generate a single output file in 5.1 format (experimental) with the command
+or you can generate a single output file in 5.1 format with the command
 
 ```
 go run sqdecoder.go -input "sqdemo1.wav" -audioformat "5.1"
@@ -80,9 +80,11 @@ The 0.316 coeff is a -10db attenuation
 
 ```
 center = alpha * (lf + rf)
-lfe = 0.316*Lowpassfilter(<350hz,lf + rf + lb + rb)
+lfe = 0.316*Lowpassfilter(<150hz,lf + rf + lb + rb)
 
 ```
+The low-pass filter is greatly improved if a continuous attenuation function is used.
+See https://github.com/jeandi7/lowFilterPassFFT
 
 
 to be continued...
