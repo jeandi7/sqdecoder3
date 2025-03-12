@@ -15,6 +15,133 @@ import (
 	"gonum.org/v1/gonum/dsp/fourier"
 )
 
+// used for QS to 5.1
+func DecodeQSTo5_1(LT []float64, RT []float64) ([]float64, []float64, []float64, []float64, []float64, []float64) {
+	var alpha float64 = 0.924
+	var beta float64 = 0.383
+	var alpha1 float64 = 1 / math.Sqrt(2)
+
+	// lfecoeff : -10db = 0.316...
+	var lfecoeff = math.Pow(10, -1.0/2.0)
+	log.Info("DecodeQS to 5.1 (experimental) ...", "lfcoeff", lfecoeff)
+
+	N := len(LT)
+	if len(RT) != N {
+		log.Error("Input slices LT and RT must have the same length : QS decoding")
+		panic("Input slices LT and RT must have the same length in QS decoding")
+	}
+
+	fft := fourier.NewFFT(N)
+	freqLT := fft.Coefficients(nil, LT)
+	freqRT := fft.Coefficients(nil, RT)
+
+	M := len(freqLT)
+	log.Info("Expected FFT output size in QS decoding:", "expected", (N/2)+1, "actual", M)
+
+	frontLeft := make([]complex128, M)
+	frontRight := make([]complex128, M)
+	backLeft := make([]complex128, M)
+	backRight := make([]complex128, M)
+	center := make([]complex128, M)
+	lfe := make([]complex128, M)
+
+	for i := 0; i < M; i++ {
+		// lf = 0.924*LT + 0.383*RT
+		frontLeft[i] = complex(alpha, 0)*freqLT[i] + complex(beta, 0)*freqRT[i]
+		// rf = 0.383*LT+0.924*RT
+		frontRight[i] = complex(beta, 0)*freqRT[i] + complex(alpha, 0)*freqRT[i]
+		// Compute back left channel: lb = j * (0.383*RT - 0.924*LT)
+		backLeft[i] = complex(0, 1) * (complex(beta, 0)*freqRT[i] - complex(alpha, 0)*freqLT[i])
+		// Compute back right channel: rb = j * (0.383*LT - 0.924*RT)
+		backRight[i] = complex(0, 1) * (complex(beta, 0)*freqLT[i] - complex(alpha, 0)*freqRT[i])
+		center[i] = complex(alpha1, 0) * (freqLT[i] + freqRT[i])
+		lfe[i] = complex(lfecoeff, 0) * (freqLT[i] + freqRT[i] + backLeft[i] + backRight[i])
+	}
+
+	// Appliquer le filtre passe-bas à lfe
+
+	// lowPassFilterLFE(lfe, 44100.0, 150.0) // Supposons 44.1 kHz, ajustez selon votre cas
+	lowPassFilterLFEContinuous(lfe, 44100.0, 150.0)
+
+	log.Info("QS decoding: lfe size:", "lfetime", len(lfe), "lfe", len(lfe))
+
+	frontLeftTime := fft.Sequence(nil, frontLeft)
+	frontRightTime := fft.Sequence(nil, frontRight)
+	backLeftTime := fft.Sequence(nil, backLeft)
+	backRightTime := fft.Sequence(nil, backRight)
+	centerTime := fft.Sequence(nil, center)
+	lfeTime := fft.Sequence(nil, lfe)
+
+	normalize(&frontLeftTime, &frontRightTime)
+	normalize(&backLeftTime, &backRightTime)
+	// normalize(&centerTime, &lfeTime)
+
+	normalizeSingle(&centerTime)
+	normalizeSingle(&lfeTime)
+
+	log.Info("DecodeQS to 5.1 is done.")
+
+	return frontLeftTime, frontRightTime, centerTime, lfeTime, backLeftTime, backRightTime
+}
+
+// DecodeQS decodes an QS encoded stereo channels into quadriphonic channels.
+// LT and RT are the left-total and right-total input signals.
+// Returns the decoded back-left and back-right signals.
+
+func DecodeQS(LT []float64, RT []float64) ([]float64, []float64, []float64, []float64) {
+	var alpha float64 = 0.924
+	var beta float64 = 0.383
+	log.Info("DecodeQS...")
+
+	N := len(LT)
+	if len(RT) != N {
+		log.Error("Input slices LT and RT must have the same length: QS decoding")
+		panic("Input slices LT and RT must have the same length: QS decoding")
+	}
+	// Init fourier transform
+	fft := fourier.NewFFT(N)
+
+	// Compute frequency domain signals
+	freqLT := fft.Coefficients(nil, LT)
+	freqRT := fft.Coefficients(nil, RT)
+
+	M := len(freqLT)
+	log.Info("QS decoding : Expected FFT output size:", "expected", (N/2)+1, "actual", M)
+	// fmt.Printf("Expected FFT output size: %d, actual: %d\n", (N/2)+1, M)
+
+	// Init slices for front channels and back channels
+	frontLeft := make([]complex128, M)
+	frontRight := make([]complex128, M)
+	backLeft := make([]complex128, M)
+	backRight := make([]complex128, M)
+
+	// for i := range M {
+	for i := 0; i < M; i++ {
+		// lf = 0.924*LT + 0.383*RT
+		frontLeft[i] = complex(alpha, 0)*freqLT[i] + complex(beta, 0)*freqRT[i]
+		// rf = 0.383*LT+0.924*RT
+		frontRight[i] = complex(beta, 0)*freqRT[i] + complex(alpha, 0)*freqRT[i]
+		// Compute back left channel: lb = j * (0.383*RT - 0.924*LT)
+		backLeft[i] = complex(0, 1) * (complex(beta, 0)*freqRT[i] - complex(alpha, 0)*freqLT[i])
+		// Compute back right channel: rb = j * (0.383*LT - 0.924*RT)
+		backRight[i] = complex(0, 1) * (complex(beta, 0)*freqLT[i] - complex(alpha, 0)*freqRT[i])
+	}
+
+	// Inverse FFT to go back to time domain
+	frontLeftTime := fft.Sequence(nil, frontLeft)
+	frontRightTime := fft.Sequence(nil, frontRight)
+	backLeftTime := fft.Sequence(nil, backLeft)
+	backRightTime := fft.Sequence(nil, backRight)
+
+	// Normalize
+	normalize(&backLeftTime, &backRightTime)
+	normalize(&frontLeftTime, &frontRightTime)
+
+	log.Info("DecodeQS is done.")
+
+	return frontLeftTime, frontRightTime, backLeftTime, backRightTime
+}
+
 // DecodeSQ decodes an SQ encoded stereo channels into quadriphonic channels.
 // LT and RT are the left-total and right-total input signals.
 // alpha is normally 1/SQR(2).
@@ -27,8 +154,8 @@ func DecodeSQ(LT []float64, RT []float64) ([]float64, []float64, []float64, []fl
 
 	N := len(LT)
 	if len(RT) != N {
-		log.Error("Input slices LT and RT must have the same length")
-		panic("Input slices LT and RT must have the same length")
+		log.Error("Input slices LT and RT must have the same length : SQ decoding")
+		panic("Input slices LT and RT must have the same length : SQ decoding")
 	}
 	// Init fourier transform
 	fft := fourier.NewFFT(N)
@@ -38,7 +165,7 @@ func DecodeSQ(LT []float64, RT []float64) ([]float64, []float64, []float64, []fl
 	freqRT := fft.Coefficients(nil, RT)
 
 	M := len(freqLT)
-	log.Info("Expected FFT output size:", "expected", (N/2)+1, "actual", M)
+	log.Info("SQ decoding : Expected FFT output size:", "expected", (N/2)+1, "actual", M)
 	// fmt.Printf("Expected FFT output size: %d, actual: %d\n", (N/2)+1, M)
 
 	// Init slices for front channels and back channels
@@ -144,7 +271,7 @@ func lowPassFilterLFE(lfe []complex128, sampleRate float64, cutoffFreq float64) 
 	}
 }
 
-// used for 5.1
+// SQ used for 5.1
 func DecodeSQTo5_1(LT []float64, RT []float64) ([]float64, []float64, []float64, []float64, []float64, []float64) {
 	var alpha float64 = 1 / math.Sqrt(2)
 
@@ -154,8 +281,8 @@ func DecodeSQTo5_1(LT []float64, RT []float64) ([]float64, []float64, []float64,
 
 	N := len(LT)
 	if len(RT) != N {
-		log.Error("Input slices LT and RT must have the same length")
-		panic("Input slices LT and RT must have the same length")
+		log.Error("SQ decoding : Input slices LT and RT must have the same length")
+		panic("SQ decoding : Input slices LT and RT must have the same length")
 	}
 
 	fft := fourier.NewFFT(N)
@@ -163,7 +290,7 @@ func DecodeSQTo5_1(LT []float64, RT []float64) ([]float64, []float64, []float64,
 	freqRT := fft.Coefficients(nil, RT)
 
 	M := len(freqLT)
-	log.Info("Expected FFT output size:", "expected", (N/2)+1, "actual", M)
+	log.Info("SQ decoding : Expected FFT output size:", "expected", (N/2)+1, "actual", M)
 
 	frontLeft := make([]complex128, M)
 	frontRight := make([]complex128, M)
@@ -186,7 +313,7 @@ func DecodeSQTo5_1(LT []float64, RT []float64) ([]float64, []float64, []float64,
 	// lowPassFilterLFE(lfe, 44100.0, 150.0) // Supposons 44.1 kHz, ajustez selon votre cas
 	lowPassFilterLFEContinuous(lfe, 44100.0, 150.0)
 
-	log.Info("lfe size:", "lfetime", len(lfe), "lfe", len(lfe))
+	log.Info("SQ decoding : lfe size:", "lfetime", len(lfe), "lfe", len(lfe))
 
 	frontLeftTime := fft.Sequence(nil, frontLeft)
 	frontRightTime := fft.Sequence(nil, frontRight)
@@ -527,10 +654,12 @@ var log = InitLogger()
 func main() {
 	var input string = ""
 	var audioformat string = ""
+	var matrixformat string = ""
 	var showHelp bool
 
 	flag.StringVar(&input, "input", "", "Read audio Wave File")
 	flag.StringVar(&audioformat, "audioformat", "", "is optional : value must be 4.0 or 5.1 (experimental)")
+	flag.StringVar(&matrixformat, "matrixformat", "", "is optional : value must be SQ or QS ")
 
 	flag.BoolVar(&showHelp, "help", false, "Show help message")
 	flag.Parse()
@@ -553,22 +682,40 @@ func main() {
 	}
 
 	filename := fileNameExtract(input)
+	var frontLeft, frontRight, centerTime, lfeTime, backLeft, backRight []float64
+	var filename5_1Channels, filename4Channels string
 
-	if audioformat != "" {
-		if audioformat == "5.1" {
-			filename5_1Channels := filename + "_5_1" + ".wav"
-			log.Info("Write output 5.1 channels..(experimental)...", "ouput", filename5_1Channels)
-			frontLeft, frontRight, centerTime, lfeTime, backLeft, backRight := DecodeSQTo5_1(LT, RT)
+	switch {
+	case audioformat == "5.1":
+		{
+			if matrixformat == "QS" {
+				filename5_1Channels = filename + "_QS_5_1" + ".wav"
+				log.Info("Write output 5.1 channels..(experimental)...QS decoding", "ouput", filename5_1Channels)
+				frontLeft, frontRight, centerTime, lfeTime, backLeft, backRight = DecodeQSTo5_1(LT, RT)
+			} else {
+				filename5_1Channels = filename + "_5_1" + ".wav"
+				log.Info("Write output 5.1 channels..(experimental)...SQ decoding", "ouput", filename5_1Channels)
+				frontLeft, frontRight, centerTime, lfeTime, backLeft, backRight = DecodeSQTo5_1(LT, RT)
+			}
+
 			err = writeWaveFile5_1(filename5_1Channels, sampleRate, frontLeft, frontRight, centerTime, lfeTime, backLeft, backRight)
 			if err != nil {
 				log.Error("Failed to write output 5.1 chanels:", "error", err)
 				return
 			}
+		}
 
-		} else {
-			filename4Channels := filename + "_4_0" + ".wav"
-			log.Info("Write output 4.0 channels...", "ouput", filename4Channels)
-			frontLeft, frontRight, backLeft, backRight := DecodeSQ(LT, RT)
+	case audioformat != "": // 4.0
+		{
+			if matrixformat == "QS" {
+				filename4Channels = filename + "_QS_4_0" + ".wav"
+				log.Info("Write output 4.0 channels...", "ouput", filename4Channels)
+				frontLeft, frontRight, backLeft, backRight = DecodeQS(LT, RT)
+			} else {
+				filename4Channels = filename + "_4_0" + ".wav"
+				log.Info("Write output 4.0 channels...", "ouput", filename4Channels)
+				frontLeft, frontRight, backLeft, backRight = DecodeSQ(LT, RT)
+			}
 			err = writeWaveFile4_0(filename4Channels, sampleRate, frontLeft, frontRight, backLeft, backRight)
 			if err != nil {
 				log.Error("Failed to write output 4.0 chanels:", "error", err)
@@ -576,21 +723,45 @@ func main() {
 			}
 		}
 
-	} else {
-		filenameBackChanels := "output_back_" + filename + ".wav"
-		filenameFrontChanels := "output_front_" + filename + ".wav"
-		frontLeft, frontRight, backLeft, backRight := DecodeSQ(LT, RT)
-		log.Info("Write output back channels...", "ouput", filenameBackChanels)
-		err = writeWaveFile(filenameBackChanels, sampleRate, backLeft, backRight)
-		if err != nil {
-			log.Error("Failed to write output back channels:", "error", err)
-			return
-		}
-		log.Info("Write output front channels...", "ouput", filenameFrontChanels)
-		err = writeWaveFile(filenameFrontChanels, sampleRate, frontLeft, frontRight)
-		if err != nil {
-			log.Error("Failed to write output front chanels:", "error", err)
-			return
+	default:
+		{
+			var filenameBackChanels, filenameFrontChanels string
+			if matrixformat == "QS" {
+				filenameBackChanels = "output_back_QS_" + filename + ".wav"
+				filenameFrontChanels = "output_front_QS_" + filename + ".wav"
+				frontLeft, frontRight, backLeft, backRight = DecodeQS(LT, RT)
+				log.Info("Write output back QS channels...", "ouput", filenameBackChanels)
+				err = writeWaveFile(filenameBackChanels, sampleRate, backLeft, backRight)
+				if err != nil {
+					log.Error("QS: Failed to write output back channels:", "error", err)
+					return
+				}
+				log.Info("Write output front QS channels...", "ouput", filenameFrontChanels)
+				err = writeWaveFile(filenameFrontChanels, sampleRate, frontLeft, frontRight)
+				if err != nil {
+					log.Error("Failed to write output front chanels:", "error", err)
+					return
+				}
+
+			} else {
+				filenameBackChanels = "output_back_" + filename + ".wav"
+				filenameFrontChanels = "output_front_" + filename + ".wav"
+				frontLeft, frontRight, backLeft, backRight = DecodeSQ(LT, RT)
+				log.Info("Write output back channels...", "ouput", filenameBackChanels)
+				err = writeWaveFile(filenameBackChanels, sampleRate, backLeft, backRight)
+				if err != nil {
+					log.Error("Failed to write output back channels:", "error", err)
+					return
+				}
+				log.Info("Write output front channels...", "ouput", filenameFrontChanels)
+				err = writeWaveFile(filenameFrontChanels, sampleRate, frontLeft, frontRight)
+				if err != nil {
+					log.Error("Failed to write output front chanels:", "error", err)
+					return
+				}
+
+			}
+
 		}
 	}
 
