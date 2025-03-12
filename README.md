@@ -120,6 +120,7 @@ go run sqdecoder.go -input "qsdemo1.wav" -audioformat "4.0" -matrixformat "QS"
 go run sqdecoder.go -input "qsdemo1.wav" -audioformat "5.1" -matrixformat "QS"
 ```
 
+
 to be continued...
 
 # sources
