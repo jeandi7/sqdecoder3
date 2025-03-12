@@ -108,16 +108,14 @@ rb = j * (0.383*LT - 0.924*RT)
 ```
 I have very few records in the QS standard, but it was easy to add this decoding, so I did it. 
 
-I included a sample file in QS format in the project.
+I included a sample file qsdemo2.wav in QS format in the project.
 
 Commands are identical and work the same as in SQ mode :
 
 ```
-go run sqdecoder.go -input "qsdemo1.wav" -matrixformat "QS"
-
-go run sqdecoder.go -input "qsdemo1.wav" -audioformat "4.0" -matrixformat "QS"
-
-go run sqdecoder.go -input "qsdemo1.wav" -audioformat "5.1" -matrixformat "QS"
+go run sqdecoder.go -input "qsdemo2.wav" -matrixformat "QS"
+go run sqdecoder.go -input "qsdemo2.wav" -audioformat "4.0" -matrixformat "QS"
+go run sqdecoder.go -input "qsdemo2.wav" -audioformat "5.1" -matrixformat "QS"
 ```
 
 
