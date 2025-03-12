@@ -1,4 +1,4 @@
-# Quadriphonic SQdecoder and QSdecoder in less than 800 lines of golang : Part 3
+# Quadriphonic (SQ+QS)decoder in less than 800 lines of golang : Part 3
 
 This part follows part 1 and part 2 from Quadriphonic SQDecoder from my previous article.
 
